@@ -25,9 +25,9 @@ logging.basicConfig(
 )
 
 # 定时问候配置
-greeting_times_1 = {
-    "07:00": r"E:/project/get up.wav",
-    "02:00": r"E:/project/good night.wav",
+greeting = {
+    "07:00": r"file://E:/project/get up.wav",
+    "02:00": r"file://E:/project/good night.wav",
 }
 
 # 令牌桶实现
@@ -50,17 +50,17 @@ class TokenBucket:
         :param tokens: 需要消耗的令牌数
         :return: 如果可以消耗则返回True，否则返回False
         """
-        # 计算当前令牌数量
+        # 首先添加新令牌
         now = time.time()
         time_passed = now - self.last_time
         self.last_time = now
         
-        # 添加新的令牌
+        # 添加新令牌
         self.tokens += time_passed * self.fill_rate
         if self.tokens > self.capacity:
             self.tokens = self.capacity
-        
-        # 如果令牌不足，则拒绝请求
+            
+        # 检查是否有足够令牌可供消费
         if tokens <= self.tokens:
             self.tokens -= tokens
             return True
@@ -193,7 +193,7 @@ def rate_limit(limiter, user_limiters, user_id, exempt_users=None):
     :param exempt_users: 豁免用户列表
     :return: (是否允许请求, 拒绝原因)
     """
-    # 检查用户是否豁免
+    # 检查用户豁免
     if exempt_users and user_id in exempt_users:
         return True, ""
     
@@ -201,10 +201,12 @@ def rate_limit(limiter, user_limiters, user_id, exempt_users=None):
     if not limiter.consume(1):
         return False, "系统繁忙，请稍后再试"
     
-    # 用户级限流检查
+    # 用户级限流器
     if user_id not in user_limiters:
-        user_limiters[user_id] = TokenBucket(1, 1)  # 每个用户每秒1个请求，最多积累1个令牌
+        user_limiters[user_id] = TokenBucket(3, 0.5)
+        user_limiters[user_id].tokens = 1
     
+    # 用户级限流检查
     if not user_limiters[user_id].consume(1):
         return False, "请求太频繁，请稍后再试"
     
@@ -239,20 +241,17 @@ async def url_to_base64(url):
         import tempfile
         
         try:
-            # 创建临时文件
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
                 temp_path = tmp.name
             
-            # 使用curl命令下载文件
             curl_cmd = f'curl -k -A "Mozilla/5.0" -o "{temp_path}" "{url}"'
             subprocess.run(curl_cmd, shell=True, timeout=30)
             
-            # 如果文件存在且大小大于0，则读取文件内容
             if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
                 with open(temp_path, "rb") as f:
                     image_data = f.read()
                     base64_data = base64.b64encode(image_data).decode('utf-8')
-                os.unlink(temp_path)  # 删除临时文件
+                os.unlink(temp_path)
                 return base64_data
         except Exception as e:
             logging.error(f"使用curl下载图片失败: {str(e)}")
@@ -281,7 +280,7 @@ async def extract_at_content(raw_message, message_array):
     """提取@消息的内容"""
     is_at_bot = False
     actual_content = raw_message
-    bot_qq = '3435782327'  # 机器人QQ号
+    bot_qq = Config.BOT_ID
     
     # 方法1: 检查raw_message
     if raw_message.startswith(f"[CQ:at,qq={bot_qq}"):
@@ -568,7 +567,6 @@ async def handle_private_chat(user_id, message, message_array=None):
                 is_private=True
             )
             
-            # 严重错误通知管理员
             if code >= 500:
                 await msg_util.send_text(
                     Config.ADMIN_ID,
@@ -577,7 +575,6 @@ async def handle_private_chat(user_id, message, message_array=None):
                 )
             return {}
             
-        # 发送回复
         await msg_util.send_text(user_id, answer, is_private=True)
         return {}
     except Exception as e:
@@ -588,6 +585,7 @@ async def handle_private_chat(user_id, message, message_array=None):
             is_private=True
         )
         return {}
+    
 async def handle_songs_images(target_id, is_private=False):
     """处理粥歌图片发送"""
     try:
@@ -611,11 +609,9 @@ async def handle_songs_images(target_id, is_private=False):
 async def handle_random_image(target_id, is_private=False):
     """从数据库随机获取并发送一张图片"""
     try:
-        # 获取随机图片的Base64数据
         base64_data = image_db.get_random_image()
         
         if not base64_data:
-            # 如果没有找到图片，发送提示消息
             await msg_util.send_text(
                 target_id,
                 "暂无图片可以显示",
@@ -623,7 +619,6 @@ async def handle_random_image(target_id, is_private=False):
             )
             return {}
         
-        # 发送图片
         await msg_util.send_image(
             target_id,
             image_base=base64_data,
@@ -682,7 +677,6 @@ async def handle_private_message(user_id, message, message_array=None):
             await msg_util.send_text(user_id, msg["message"], is_private=True)
             return {}
         
-        # 处理图片命令
         if message == "粥表":
             await msg_util.send_image(
                 user_id, 
@@ -699,7 +693,7 @@ async def handle_private_message(user_id, message, message_array=None):
         
         elif message == "来张美图":
             return await handle_random_image(user_id, is_private=True)
-
+        
         # 处理管理员命令
         elif message in ["服务状态", "清理缓存", "重载配置"]:
             return await handle_admin_command(user_id, message)
@@ -751,7 +745,7 @@ async def handle_service_status(user_id):
             f"- API调用次数: {api_calls}\n"
             f"- 用户数: {len(unique_users)}\n"
             f"- 当前聊天限流器: {len(user_chat_limiters)}\n"
-            f"- 当前视频限流器: {len(user_video_limiters)}\n"
+            f"- 当前视频限流器: {len(user_video_limiters)}"
         )
         
         await msg_util.send_text(user_id, status, is_private=True)
@@ -862,7 +856,53 @@ async def root(request: Request):
                 image_url=Config.MEDIA['schedule_image']
             )
             return {}
-            
+        
+        elif raw_message == "早安":
+            try:
+                if greeting.get("07:00"):
+                    await msg_util.send_message(
+                        group_id,
+                        {'type': 'record', 'data': {'file': greeting["07:00"]}}
+                    )
+                else:
+                    await msg_util.send_text(
+                        group_id,
+                        "早安语音文件未配置",
+                        is_private=False
+                    )
+                return {}
+            except Exception as e:
+                logging.error(f"发送早安语音时发生错误: {str(e)}")
+                await msg_util.send_text(
+                    group_id,
+                    "发送早安语音失败，请稍后再试",
+                    is_private=False
+                )
+                return {}
+        
+        elif raw_message == "晚安":
+            try:
+                if greeting.get("02:00"): 
+                    await msg_util.send_message(
+                        group_id,
+                        {'type': 'record', 'data': {'file': greeting["02:00"]}}
+                    )
+                else:
+                    await msg_util.send_text(
+                        group_id,
+                        "晚安语音文件未配置",
+                        is_private=False
+                    )
+                return {}
+            except Exception as e:
+                logging.error(f"发送晚安语音时发生错误: {str(e)}")
+                await msg_util.send_text(
+                    group_id,
+                    "发送晚安语音失败，请稍后再试",
+                    is_private=False
+                )
+                return {}
+
         elif raw_message == "粥歌":
             return await handle_songs_images(group_id)
             
@@ -889,7 +929,7 @@ async def periodic_cleanup():
     while True:
         try:
             current_time = time.time()
-            inactive_threshold = current_time - 1800  # 30分钟不活跃则清理
+            inactive_threshold = current_time - 1800
             
             # 清理聊天限流器
             chat_inactive = []
@@ -922,23 +962,35 @@ async def greetings():
     """定时消息发送"""
     while True:
         time_now = time.strftime("%H:%M", time.localtime())
-        if time_now in greeting_times_1:
+        if time_now in greeting:
             await msg_util.send_message(
                 Config.target_group_id, 
-                {'type': 'record', 'data': {'file': greeting_times_1[time_now]}}
+                {'type': 'record', 'data': {'file': greeting[time_now]}}
             )
-            logging.info(f"定时发送问候语音到群 {Config.target_group_id}: {greeting_times_1[time_now]}")
+            logging.info(f"定时发送问候语音到群 {Config.target_group_id}: {greeting[time_now]}")
             await asyncio.sleep(61)
         else:
             await asyncio.sleep(59)
 
-if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+def run_background_tasks():
+    """在独立线程中运行后台任务"""
+    try:
+        # 创建新的事件循环
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        logging.INFO("后台任务线程已创建")
+        loop.run_until_complete(asyncio.gather(
+            greetings(),
+            periodic_cleanup()
+        ))
+    except Exception as e:
+        logging.error(f"后台任务线程初始化失败: {str(e)}")
 
-    # 将定时任务添加到事件循环中
-    loop.create_task(greetings())
-    loop.create_task(periodic_cleanup())
+if __name__ == "__main__":
+    background_thread = threading.Thread(target=run_background_tasks, daemon=True)
+    background_thread.start()
+    logging.info("后台任务线程已启动")
+
     uvicorn.run(
         app,
         host="0.0.0.0",
